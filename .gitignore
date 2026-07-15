@@ -1,6 +1,9 @@
 # Byte-compiled / optimized / DLL files
+.venv/
 __pycache__/
 *.py[codz]
+.pytest_cache/
+.env
 *$py.class
 
 # C extensions
