@@ -1,14 +1,27 @@
 from fastapi.testclient import TestClient
 
+from app.auth.jwt import (
+    create_email_verification_token,
+    create_password_reset_token,
+)
+
 
 TEST_USER = {
     "email": "developer@example.com",
     "password": "SecurePass123",
 }
 
+GENERIC_PASSWORD_RESET_MESSAGE = (
+    "If an account exists for this email, "
+    "password reset instructions have been sent"
+)
+
 
 def register_user(client: TestClient) -> dict:
-    response = client.post("/auth/register", json=TEST_USER)
+    response = client.post(
+        "/auth/register",
+        json=TEST_USER,
+    )
 
     assert response.status_code == 201
 
@@ -18,7 +31,9 @@ def register_user(client: TestClient) -> dict:
 def register_and_verify_user(client: TestClient) -> dict:
     registration = register_user(client)
 
-    verification_token = registration["verification_token"]
+    verification_token = create_email_verification_token(
+        subject=str(registration["id"])
+    )
 
     response = client.get(
         "/auth/verify-email",
@@ -26,12 +41,18 @@ def register_and_verify_user(client: TestClient) -> dict:
     )
 
     assert response.status_code == 200
+    assert response.json() == {
+        "message": "Email verified successfully"
+    }
 
     return registration
 
 
 def login_user(client: TestClient) -> dict:
-    response = client.post("/auth/login", json=TEST_USER)
+    response = client.post(
+        "/auth/login",
+        json=TEST_USER,
+    )
 
     assert response.status_code == 200
 
@@ -49,23 +70,35 @@ def get_access_token(client: TestClient) -> str:
 
 
 def auth_headers(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+    return {
+        "Authorization": f"Bearer {token}",
+    }
 
 
 def test_register_user(client: TestClient) -> None:
     body = register_user(client)
 
-    assert body["id"] == 1
-    assert body["email"] == TEST_USER["email"]
-    assert body["is_active"] is True
-    assert body["is_verified"] is False
-    assert isinstance(body["verification_token"], str)
+    assert body == {
+        "id": 1,
+        "email": TEST_USER["email"],
+        "is_active": True,
+        "is_verified": False,
+        "message": (
+            "Registration successful. "
+            "Check your email to verify your account."
+        ),
+    }
 
 
-def test_duplicate_registration(client: TestClient) -> None:
+def test_duplicate_registration(
+    client: TestClient,
+) -> None:
     register_user(client)
 
-    response = client.post("/auth/register", json=TEST_USER)
+    response = client.post(
+        "/auth/register",
+        json=TEST_USER,
+    )
 
     assert response.status_code == 409
     assert response.json() == {
@@ -78,7 +111,10 @@ def test_login_rejected_before_email_verification(
 ) -> None:
     register_user(client)
 
-    response = client.post("/auth/login", json=TEST_USER)
+    response = client.post(
+        "/auth/login",
+        json=TEST_USER,
+    )
 
     assert response.status_code == 403
     assert response.json() == {
@@ -86,12 +122,18 @@ def test_login_rejected_before_email_verification(
     }
 
 
-def test_verify_email(client: TestClient) -> None:
+def test_verify_email(
+    client: TestClient,
+) -> None:
     registration = register_user(client)
+
+    verification_token = create_email_verification_token(
+        subject=str(registration["id"])
+    )
 
     response = client.get(
         "/auth/verify-email",
-        params={"token": registration["verification_token"]},
+        params={"token": verification_token},
     )
 
     assert response.status_code == 200
@@ -114,7 +156,9 @@ def test_verify_email_rejects_invalid_token(
     }
 
 
-def test_login_returns_tokens(client: TestClient) -> None:
+def test_login_returns_tokens(
+    client: TestClient,
+) -> None:
     register_and_verify_user(client)
 
     body = login_user(client)
@@ -123,7 +167,9 @@ def test_login_returns_tokens(client: TestClient) -> None:
     assert body["refresh_token"]
 
 
-def test_login_with_wrong_password(client: TestClient) -> None:
+def test_login_with_wrong_password(
+    client: TestClient,
+) -> None:
     register_and_verify_user(client)
 
     response = client.post(
@@ -140,13 +186,16 @@ def test_login_with_wrong_password(client: TestClient) -> None:
     }
 
 
-def test_read_current_user(client: TestClient) -> None:
+def test_read_current_user(
+    client: TestClient,
+) -> None:
     register_and_verify_user(client)
-    token = get_access_token(client)
+
+    access_token = get_access_token(client)
 
     response = client.get(
         "/users/me",
-        headers=auth_headers(token),
+        headers=auth_headers(access_token),
     )
 
     assert response.status_code == 200
@@ -182,7 +231,9 @@ def test_refresh_returns_new_access_token(
 
     response = client.post(
         "/auth/refresh",
-        json={"refresh_token": refresh_token},
+        json={
+            "refresh_token": refresh_token,
+        },
     )
 
     assert response.status_code == 200
@@ -210,7 +261,9 @@ def test_refresh_rejects_access_token(
 
     response = client.post(
         "/auth/refresh",
-        json={"refresh_token": access_token},
+        json={
+            "refresh_token": access_token,
+        },
     )
 
     assert response.status_code == 401
@@ -224,7 +277,9 @@ def test_refresh_rejects_invalid_token(
 ) -> None:
     response = client.post(
         "/auth/refresh",
-        json={"refresh_token": "not-a-valid-jwt"},
+        json={
+            "refresh_token": "not-a-valid-jwt",
+        },
     )
 
     assert response.status_code == 401
@@ -237,12 +292,15 @@ def test_update_current_user_email(
     client: TestClient,
 ) -> None:
     register_and_verify_user(client)
-    token = get_access_token(client)
+
+    access_token = get_access_token(client)
 
     response = client.patch(
         "/users/me",
-        json={"email": "updated@example.com"},
-        headers=auth_headers(token),
+        json={
+            "email": "updated@example.com",
+        },
+        headers=auth_headers(access_token),
     )
 
     assert response.status_code == 200
@@ -254,9 +312,12 @@ def test_update_current_user_email(
     }
 
 
-def test_change_password(client: TestClient) -> None:
+def test_change_password(
+    client: TestClient,
+) -> None:
     register_and_verify_user(client)
-    token = get_access_token(client)
+
+    access_token = get_access_token(client)
 
     response = client.post(
         "/users/me/change-password",
@@ -264,15 +325,19 @@ def test_change_password(client: TestClient) -> None:
             "current_password": TEST_USER["password"],
             "new_password": "NewSecurePass456",
         },
-        headers=auth_headers(token),
+        headers=auth_headers(access_token),
     )
 
     assert response.status_code == 204
 
-    old_login = client.post("/auth/login", json=TEST_USER)
-    assert old_login.status_code == 401
+    old_login_response = client.post(
+        "/auth/login",
+        json=TEST_USER,
+    )
 
-    new_login = client.post(
+    assert old_login_response.status_code == 401
+
+    new_login_response = client.post(
         "/auth/login",
         json={
             "email": TEST_USER["email"],
@@ -280,14 +345,15 @@ def test_change_password(client: TestClient) -> None:
         },
     )
 
-    assert new_login.status_code == 200
+    assert new_login_response.status_code == 200
 
 
 def test_change_password_rejects_wrong_current_password(
     client: TestClient,
 ) -> None:
     register_and_verify_user(client)
-    token = get_access_token(client)
+
+    access_token = get_access_token(client)
 
     response = client.post(
         "/users/me/change-password",
@@ -295,7 +361,7 @@ def test_change_password_rejects_wrong_current_password(
             "current_password": "WrongPassword123",
             "new_password": "NewSecurePass456",
         },
-        headers=auth_headers(token),
+        headers=auth_headers(access_token),
     )
 
     assert response.status_code == 400
@@ -308,11 +374,12 @@ def test_deactivate_current_user(
     client: TestClient,
 ) -> None:
     register_and_verify_user(client)
-    token = get_access_token(client)
+
+    access_token = get_access_token(client)
 
     response = client.delete(
         "/users/me",
-        headers=auth_headers(token),
+        headers=auth_headers(access_token),
     )
 
     assert response.status_code == 204
@@ -325,22 +392,22 @@ def test_deactivate_current_user(
     assert login_response.status_code in {401, 403}
 
 
-def test_forgot_password_returns_reset_token(
+def test_forgot_password_returns_success_message(
     client: TestClient,
 ) -> None:
     register_and_verify_user(client)
 
     response = client.post(
         "/auth/forgot-password",
-        json={"email": TEST_USER["email"]},
+        json={
+            "email": TEST_USER["email"],
+        },
     )
 
     assert response.status_code == 200
-
-    body = response.json()
-
-    assert "message" in body
-    assert isinstance(body["reset_token"], str)
+    assert response.json() == {
+        "message": GENERIC_PASSWORD_RESET_MESSAGE
+    }
 
 
 def test_forgot_password_hides_unknown_email(
@@ -348,28 +415,37 @@ def test_forgot_password_hides_unknown_email(
 ) -> None:
     response = client.post(
         "/auth/forgot-password",
-        json={"email": "missing@example.com"},
+        json={
+            "email": "missing@example.com",
+        },
     )
 
     assert response.status_code == 200
-
-    body = response.json()
-
-    assert "message" in body
-    assert body["reset_token"] is None
+    assert response.json() == {
+        "message": GENERIC_PASSWORD_RESET_MESSAGE
+    }
 
 
-def test_reset_password(client: TestClient) -> None:
-    register_and_verify_user(client)
+def test_reset_password(
+    client: TestClient,
+) -> None:
+    registration = register_and_verify_user(client)
 
     forgot_response = client.post(
         "/auth/forgot-password",
-        json={"email": TEST_USER["email"]},
+        json={
+            "email": TEST_USER["email"],
+        },
     )
 
     assert forgot_response.status_code == 200
+    assert forgot_response.json() == {
+        "message": GENERIC_PASSWORD_RESET_MESSAGE
+    }
 
-    reset_token = forgot_response.json()["reset_token"]
+    reset_token = create_password_reset_token(
+        subject=str(registration["id"])
+    )
 
     reset_response = client.post(
         "/auth/reset-password",
@@ -384,14 +460,14 @@ def test_reset_password(client: TestClient) -> None:
         "message": "Password reset successfully"
     }
 
-    old_login = client.post(
+    old_login_response = client.post(
         "/auth/login",
         json=TEST_USER,
     )
 
-    assert old_login.status_code == 401
+    assert old_login_response.status_code == 401
 
-    new_login = client.post(
+    new_login_response = client.post(
         "/auth/login",
         json={
             "email": TEST_USER["email"],
@@ -399,7 +475,7 @@ def test_reset_password(client: TestClient) -> None:
         },
     )
 
-    assert new_login.status_code == 200
+    assert new_login_response.status_code == 200
 
 
 def test_reset_password_rejects_invalid_token(
@@ -422,16 +498,23 @@ def test_reset_password_rejects_invalid_token(
 def test_reset_password_rejects_same_password(
     client: TestClient,
 ) -> None:
-    register_and_verify_user(client)
+    registration = register_and_verify_user(client)
 
     forgot_response = client.post(
         "/auth/forgot-password",
-        json={"email": TEST_USER["email"]},
+        json={
+            "email": TEST_USER["email"],
+        },
     )
 
     assert forgot_response.status_code == 200
+    assert forgot_response.json() == {
+        "message": GENERIC_PASSWORD_RESET_MESSAGE
+    }
 
-    reset_token = forgot_response.json()["reset_token"]
+    reset_token = create_password_reset_token(
+        subject=str(registration["id"])
+    )
 
     response = client.post(
         "/auth/reset-password",

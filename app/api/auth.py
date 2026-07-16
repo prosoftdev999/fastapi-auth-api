@@ -1,4 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    status,
+)
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,6 +35,10 @@ from app.schemas.password_reset import (
     ResetPasswordRequest,
 )
 from app.schemas.user import UserCreate, UserResponse
+from app.services.email import (
+    send_password_reset_email,
+    send_verification_email,
+)
 
 router = APIRouter(
     prefix="/auth",
@@ -43,8 +53,9 @@ router = APIRouter(
 )
 def register_user(
     user_data: UserCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-) -> User:
+) -> RegistrationResponse:
     email = str(user_data.email).lower()
     existing_user = db.scalar(
         select(User).where(User.email == email)
@@ -69,12 +80,18 @@ def register_user(
         subject=str(user.id)
     )
 
+    background_tasks.add_task(
+        send_verification_email,
+        user.email,
+        verification_token,
+    )
+
     return RegistrationResponse(
         id=user.id,
         email=user.email,
         is_active=user.is_active,
         is_verified=user.is_verified,
-        verification_token=verification_token,
+        message="Registration successful. Check your email to verify your account.",
     )
 
 
@@ -207,6 +224,7 @@ def verify_email(
 )
 def forgot_password(
     request_data: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> ForgotPasswordResponse:
     email = str(request_data.email).lower()
@@ -217,22 +235,22 @@ def forgot_password(
 
     generic_message = (
         "If an account exists for this email, "
-        "password reset instructions have been generated"
+        "password reset instructions have been sent"
     )
 
-    if user is None or not user.is_active:
-        return ForgotPasswordResponse(
-            message=generic_message,
-            reset_token=None,
+    if user is not None and user.is_active:
+        reset_token = create_password_reset_token(
+            subject=str(user.id)
         )
 
-    reset_token = create_password_reset_token(
-        subject=str(user.id)
-    )
+        background_tasks.add_task(
+            send_password_reset_email,
+            user.email,
+            reset_token,
+        )
 
     return ForgotPasswordResponse(
         message=generic_message,
-        reset_token=reset_token,
     )
 
 

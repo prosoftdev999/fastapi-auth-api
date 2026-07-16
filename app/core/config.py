@@ -18,6 +18,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    smtp_from_name: str = "FastAPI Authentication API"
+    frontend_url: str = "http://localhost:3000"
 
 @lru_cache
 def get_settings() -> Settings:

@@ -7,6 +7,10 @@ from sqlalchemy.pool import StaticPool
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
+from collections.abc import Generator
+from unittest.mock import patch
+
+import pytest
 
 TEST_DATABASE_URL = "sqlite://"
 
@@ -48,3 +52,11 @@ def reset_database():
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)
+
+@pytest.fixture(autouse=True)
+def mock_email_delivery() -> Generator[None, None, None]:
+    with (
+        patch("app.api.auth.send_verification_email"),
+        patch("app.api.auth.send_password_reset_email"),
+    ):
+        yield
