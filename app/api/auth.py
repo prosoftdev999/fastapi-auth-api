@@ -4,7 +4,9 @@ from sqlalchemy.orm import Session
 
 from app.auth.jwt import (
     create_access_token,
+    create_email_verification_token,
     create_refresh_token,
+    decode_email_verification_token,
     decode_refresh_token,
 )
 from app.auth.password import hash_password, verify_password
@@ -13,7 +15,9 @@ from app.models.user import User
 from app.schemas.token import (
     AccessTokenResponse,
     LoginRequest,
+    MessageResponse,
     RefreshTokenRequest,
+    RegistrationResponse,
     TokenResponse,
 )
 from app.schemas.user import UserCreate, UserResponse
@@ -26,7 +30,7 @@ router = APIRouter(
 
 @router.post(
     "/register",
-    response_model=UserResponse,
+    response_model=RegistrationResponse,
     status_code=status.HTTP_201_CREATED,
 )
 def register_user(
@@ -53,7 +57,17 @@ def register_user(
     db.commit()
     db.refresh(user)
 
-    return user
+    verification_token = create_email_verification_token(
+        subject=str(user.id)
+    )
+
+    return RegistrationResponse(
+        id=user.id,
+        email=user.email,
+        is_active=user.is_active,
+        is_verified=user.is_verified,
+        verification_token=verification_token,
+    )
 
 
 @router.post(
@@ -77,6 +91,12 @@ def login_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email address is not verified",
         )
 
     if not user.is_active:
@@ -125,4 +145,50 @@ def refresh_access_token(
     return AccessTokenResponse(
         access_token=access_token,
         token_type="bearer",
+    )
+
+@router.get(
+    "/verify-email",
+    response_model=MessageResponse,
+)
+def verify_email(
+    token: str,
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    subject = decode_email_verification_token(token)
+
+    if subject is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired verification token",
+        )
+
+    try:
+        user_id = int(subject)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid verification token subject",
+        )
+
+    user = db.get(User, user_id)
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if user.is_verified:
+        return MessageResponse(
+            message="Email is already verified"
+        )
+
+    user.is_verified = True
+
+    db.add(user)
+    db.commit()
+
+    return MessageResponse(
+        message="Email verified successfully"
     )

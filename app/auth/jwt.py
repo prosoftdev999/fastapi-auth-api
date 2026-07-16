@@ -78,3 +78,17 @@ def decode_access_token(token: str) -> str | None:
 
 def decode_refresh_token(token: str) -> str | None:
     return decode_token(token, expected_type="refresh")
+
+def create_email_verification_token(subject: str) -> str:
+    return create_token(
+        subject=subject,
+        token_type="email_verification",
+        expires_delta=timedelta(minutes=30),
+    )
+
+
+def decode_email_verification_token(token: str) -> str | None:
+    return decode_token(
+        token,
+        expected_type="email_verification",
+    )

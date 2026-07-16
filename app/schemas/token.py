@@ -19,3 +19,14 @@ class RefreshTokenRequest(BaseModel):
 class AccessTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+class RegistrationResponse(BaseModel):
+    id: int
+    email: EmailStr
+    is_active: bool
+    is_verified: bool
+    verification_token: str
+
+
+class MessageResponse(BaseModel):
+    message: str
