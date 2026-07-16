@@ -167,3 +167,103 @@ def test_refresh_rejects_invalid_token(
     assert response.json() == {
         "detail": "Invalid or expired refresh token"
     }
+
+def get_access_token(client: TestClient) -> str:
+    response = client.post("/auth/login", json=TEST_USER)
+
+    assert response.status_code == 200
+
+    return response.json()["access_token"]
+
+
+def auth_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_update_current_user_email(
+    client: TestClient,
+) -> None:
+    register_user(client)
+    token = get_access_token(client)
+
+    response = client.patch(
+        "/users/me",
+        json={"email": "updated@example.com"},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": 1,
+        "email": "updated@example.com",
+        "is_active": True,
+    }
+
+
+def test_change_password(
+    client: TestClient,
+) -> None:
+    register_user(client)
+    token = get_access_token(client)
+
+    response = client.post(
+        "/users/me/change-password",
+        json={
+            "current_password": TEST_USER["password"],
+            "new_password": "NewSecurePass456",
+        },
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 204
+
+    old_login = client.post("/auth/login", json=TEST_USER)
+    assert old_login.status_code == 401
+
+    new_login = client.post(
+        "/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": "NewSecurePass456",
+        },
+    )
+    assert new_login.status_code == 200
+
+
+def test_change_password_rejects_wrong_current_password(
+    client: TestClient,
+) -> None:
+    register_user(client)
+    token = get_access_token(client)
+
+    response = client.post(
+        "/users/me/change-password",
+        json={
+            "current_password": "WrongPassword123",
+            "new_password": "NewSecurePass456",
+        },
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "Current password is incorrect"
+    }
+
+
+def test_deactivate_current_user(
+    client: TestClient,
+) -> None:
+    register_user(client)
+    token = get_access_token(client)
+
+    response = client.delete(
+        "/users/me",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 204
+
+    login_response = client.post("/auth/login", json=TEST_USER)
+
+    assert login_response.status_code == 403

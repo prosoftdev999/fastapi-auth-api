@@ -33,8 +33,9 @@ def register_user(
     user_data: UserCreate,
     db: Session = Depends(get_db),
 ) -> User:
+    email = str(user_data.email).lower()
     existing_user = db.scalar(
-        select(User).where(User.email == user_data.email)
+        select(User).where(User.email == email)
     )
 
     if existing_user:
@@ -44,7 +45,7 @@ def register_user(
         )
 
     user = User(
-        email=user_data.email,
+        email=email,
         hashed_password=hash_password(user_data.password),
     )
 
@@ -63,8 +64,9 @@ def login_user(
     login_data: LoginRequest,
     db: Session = Depends(get_db),
 ) -> TokenResponse:
+    email = str(login_data.email).lower()
     user = db.scalar(
-        select(User).where(User.email == login_data.email)
+        select(User).where(User.email == email)
     )
 
     if user is None or not verify_password(
