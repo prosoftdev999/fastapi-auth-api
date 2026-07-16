@@ -220,4 +220,4 @@ __marimo__/
 # Local application database
 *.db
 *.sqlite
-*.sqlite3
+*.sqlite3.venv-linux/
