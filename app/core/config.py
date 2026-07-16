@@ -6,10 +6,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "FastAPI Authentication API"
     environment: str = "development"
-    database_url: str = (
-        "postgresql+psycopg2://postgres:postgres@localhost:5432/fastapi_auth"
-    )
+    database_url: str = "sqlite:///./fastapi_auth.db"
     secret_key: str = "change-this-in-production"
+    access_token_expire_minutes: int = 30
 
     model_config = SettingsConfigDict(
         env_file=".env",

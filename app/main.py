@@ -1,14 +1,16 @@
 from fastapi import FastAPI
 
 from app.api.auth import router as auth_router
+from app.api.users import router as users_router
 
 app = FastAPI(
     title="FastAPI Authentication API",
     description="Authentication API with JWT, PostgreSQL, Docker, and tests.",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 app.include_router(auth_router)
+app.include_router(users_router)
 
 
 @app.get("/", tags=["Health"])
