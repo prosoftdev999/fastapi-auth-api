@@ -5,8 +5,10 @@ from sqlalchemy.orm import Session
 from app.auth.jwt import (
     create_access_token,
     create_email_verification_token,
+    create_password_reset_token,
     create_refresh_token,
     decode_email_verification_token,
+    decode_password_reset_token,
     decode_refresh_token,
 )
 from app.auth.password import hash_password, verify_password
@@ -19,6 +21,12 @@ from app.schemas.token import (
     RefreshTokenRequest,
     RegistrationResponse,
     TokenResponse,
+)
+from app.schemas.password_reset import (
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
+    MessageResponse,
+    ResetPasswordRequest,
 )
 from app.schemas.user import UserCreate, UserResponse
 
@@ -191,4 +199,99 @@ def verify_email(
 
     return MessageResponse(
         message="Email verified successfully"
+    )
+
+@router.post(
+    "/forgot-password",
+    response_model=ForgotPasswordResponse,
+)
+def forgot_password(
+    request_data: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+) -> ForgotPasswordResponse:
+    email = str(request_data.email).lower()
+
+    user = db.scalar(
+        select(User).where(User.email == email)
+    )
+
+    generic_message = (
+        "If an account exists for this email, "
+        "password reset instructions have been generated"
+    )
+
+    if user is None or not user.is_active:
+        return ForgotPasswordResponse(
+            message=generic_message,
+            reset_token=None,
+        )
+
+    reset_token = create_password_reset_token(
+        subject=str(user.id)
+    )
+
+    return ForgotPasswordResponse(
+        message=generic_message,
+        reset_token=reset_token,
+    )
+
+
+@router.post(
+    "/reset-password",
+    response_model=MessageResponse,
+)
+def reset_password(
+    request_data: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    subject = decode_password_reset_token(
+        request_data.token
+    )
+
+    if subject is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired password reset token",
+        )
+
+    try:
+        user_id = int(subject)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid password reset token subject",
+        )
+
+    user = db.get(User, user_id)
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive",
+        )
+
+    if verify_password(
+        request_data.new_password,
+        user.hashed_password,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different",
+        )
+
+    user.hashed_password = hash_password(
+        request_data.new_password
+    )
+
+    db.add(user)
+    db.commit()
+
+    return MessageResponse(
+        message="Password reset successfully"
     )

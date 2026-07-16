@@ -92,3 +92,17 @@ def decode_email_verification_token(token: str) -> str | None:
         token,
         expected_type="email_verification",
     )
+
+def create_password_reset_token(subject: str) -> str:
+    return create_token(
+        subject=subject,
+        token_type="password_reset",
+        expires_delta=timedelta(minutes=15),
+    )
+
+
+def decode_password_reset_token(token: str) -> str | None:
+    return decode_token(
+        token,
+        expected_type="password_reset",
+    )
