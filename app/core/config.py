@@ -8,7 +8,9 @@ class Settings(BaseSettings):
     environment: str = "development"
     database_url: str = "sqlite:///./fastapi_auth.db"
     secret_key: str = "change-this-in-production"
+
     access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 7
 
     model_config = SettingsConfigDict(
         env_file=".env",

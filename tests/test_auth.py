@@ -21,6 +21,7 @@ def login_user(client: TestClient) -> str:
 
     assert body["token_type"] == "bearer"
     assert isinstance(body["access_token"], str)
+    assert isinstance(body["refresh_token"], str)
 
     return body["access_token"]
 
@@ -47,12 +48,18 @@ def test_duplicate_registration(client: TestClient) -> None:
     }
 
 
-def test_login_returns_token(client: TestClient) -> None:
+def test_login_returns_tokens(client: TestClient) -> None:
     register_user(client)
 
-    token = login_user(client)
+    response = client.post("/auth/login", json=TEST_USER)
 
-    assert token
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["token_type"] == "bearer"
+    assert isinstance(body["access_token"], str)
+    assert isinstance(body["refresh_token"], str)
 
 
 def test_login_with_wrong_password(client: TestClient) -> None:
@@ -67,15 +74,18 @@ def test_login_with_wrong_password(client: TestClient) -> None:
     )
 
     assert response.status_code == 401
+    assert response.json() == {
+        "detail": "Invalid email or password"
+    }
 
 
 def test_read_current_user(client: TestClient) -> None:
     register_user(client)
-    token = login_user(client)
+    access_token = login_user(client)
 
     response = client.get(
         "/users/me",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {access_token}"},
     )
 
     assert response.status_code == 200
@@ -90,3 +100,70 @@ def test_read_current_user_without_token(client: TestClient) -> None:
     response = client.get("/users/me")
 
     assert response.status_code in {401, 403}
+
+
+def test_refresh_returns_new_access_token(
+    client: TestClient,
+) -> None:
+    register_user(client)
+
+    login_response = client.post(
+        "/auth/login",
+        json=TEST_USER,
+    )
+
+    assert login_response.status_code == 200
+
+    refresh_token = login_response.json()["refresh_token"]
+
+    response = client.post(
+        "/auth/refresh",
+        json={"refresh_token": refresh_token},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["token_type"] == "bearer"
+    assert isinstance(body["access_token"], str)
+    assert "refresh_token" not in body
+
+
+def test_refresh_rejects_access_token(
+    client: TestClient,
+) -> None:
+    register_user(client)
+
+    login_response = client.post(
+        "/auth/login",
+        json=TEST_USER,
+    )
+
+    assert login_response.status_code == 200
+
+    access_token = login_response.json()["access_token"]
+
+    response = client.post(
+        "/auth/refresh",
+        json={"refresh_token": access_token},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "Invalid or expired refresh token"
+    }
+
+
+def test_refresh_rejects_invalid_token(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/auth/refresh",
+        json={"refresh_token": "not-a-valid-jwt"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "Invalid or expired refresh token"
+    }

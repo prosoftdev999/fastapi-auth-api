@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from jose import JWTError, jwt
 
@@ -7,14 +8,18 @@ from app.core.config import settings
 ALGORITHM = "HS256"
 
 
-def create_access_token(subject: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.access_token_expire_minutes
-    )
+def create_token(
+    subject: str,
+    token_type: str,
+    expires_delta: timedelta,
+) -> str:
+    now = datetime.now(timezone.utc)
 
     payload = {
         "sub": subject,
-        "exp": expire,
+        "type": token_type,
+        "iat": now,
+        "exp": now + expires_delta,
     }
 
     return jwt.encode(
@@ -24,20 +29,52 @@ def create_access_token(subject: str) -> str:
     )
 
 
-def decode_access_token(token: str) -> str | None:
+def create_access_token(subject: str) -> str:
+    return create_token(
+        subject=subject,
+        token_type="access",
+        expires_delta=timedelta(
+            minutes=settings.access_token_expire_minutes
+        ),
+    )
+
+
+def create_refresh_token(subject: str) -> str:
+    return create_token(
+        subject=subject,
+        token_type="refresh",
+        expires_delta=timedelta(
+            days=settings.refresh_token_expire_days
+        ),
+    )
+
+
+def decode_token(token: str, expected_type: str) -> str | None:
     try:
-        payload = jwt.decode(
+        payload: dict[str, Any] = jwt.decode(
             token,
             settings.secret_key,
             algorithms=[ALGORITHM],
         )
 
         subject = payload.get("sub")
+        token_type = payload.get("type")
 
         if not isinstance(subject, str):
+            return None
+
+        if token_type != expected_type:
             return None
 
         return subject
 
     except JWTError:
         return None
+
+
+def decode_access_token(token: str) -> str | None:
+    return decode_token(token, expected_type="access")
+
+
+def decode_refresh_token(token: str) -> str | None:
+    return decode_token(token, expected_type="refresh")
