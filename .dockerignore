@@ -27,7 +27,6 @@ fastapi_auth.db
 .vscode
 .idea
 
-tests
 docs
 
 README.md
