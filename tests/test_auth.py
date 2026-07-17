@@ -204,6 +204,7 @@ def test_read_current_user(
         "email": TEST_USER["email"],
         "is_active": True,
         "is_verified": True,
+        "roles": ["user"],
     }
 
 
@@ -309,6 +310,7 @@ def test_update_current_user_email(
         "email": "updated@example.com",
         "is_active": True,
         "is_verified": True,
+        "roles": ["user"],
     }
 
 

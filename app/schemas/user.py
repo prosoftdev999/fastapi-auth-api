@@ -29,9 +29,23 @@ class UserCreate(BaseModel):
     def validate_password(cls, password: str) -> str:
         return validate_password_strength(password)
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {"email": "jane.doe@example.com", "password": "StrongPass123"}
+            ]
+        }
+    )
+
 
 class UserUpdate(BaseModel):
     email: EmailStr | None = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [{"email": "new.email@example.com"}]
+        }
+    )
 
 
 class PasswordChange(BaseModel):
@@ -43,11 +57,43 @@ class PasswordChange(BaseModel):
     def validate_new_password(cls, password: str) -> str:
         return validate_password_strength(password)
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "current_password": "OldPass123",
+                    "new_password": "NewStrongPass456",
+                }
+            ]
+        }
+    )
+
 
 class UserResponse(BaseModel):
     id: int
     email: EmailStr
     is_active: bool
     is_verified: bool
+    roles: list[str] = []
 
-    model_config = ConfigDict(from_attributes=True)
+    @field_validator("roles", mode="before")
+    @classmethod
+    def _extract_role_names(cls, value: object) -> object:
+        if isinstance(value, list):
+            return [item.name if hasattr(item, "name") else item for item in value]
+        return value
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "id": 1,
+                    "email": "jane.doe@example.com",
+                    "is_active": True,
+                    "is_verified": True,
+                    "roles": ["user"],
+                }
+            ]
+        },
+    )

@@ -1,0 +1,89 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploy: connect this repo in the Render dashboard ("New +" -> "Blueprint"),
+# or run `render blueprint launch` with the Render CLI. After the first
+# deploy, fill in any env vars below marked `sync: false` from the Render
+# dashboard (Environment tab) — they are secrets/environment-specific values
+# that intentionally aren't committed to source control.
+services:
+  - type: web
+    name: fastapi-auth-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: APP_NAME
+        value: FastAPI Authentication API
+      - key: APP_VERSION
+        value: 0.2.0
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fastapi-auth-db
+          property: connectionString
+      # Provision a Redis instance (Render Key Value, Upstash, etc.) and paste
+      # its connection URL here — used for JWT blacklist/rate limiting.
+      - key: REDIS_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "7"
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      - key: SMTP_FROM_NAME
+        value: FastAPI Authentication API
+      # Must be https:// — production settings validation rejects http://.
+      - key: FRONTEND_URL
+        sync: false
+      # Comma-separated. Set to your real frontend origin(s), not "*".
+      - key: CORS_ORIGINS
+        sync: false
+      # Comma-separated. Set to this service's onrender.com hostname (and any
+      # custom domain) once known — production settings validation rejects "*".
+      - key: TRUSTED_HOSTS
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      # Render's edge always terminates TLS and proxies to this container —
+      # there's no way to reach it directly, so trusting X-Forwarded-For from
+      # any peer here is safe (same reasoning as the Nginx setup in
+      # docker-compose.prod.yml) and is required for per-IP rate limiting to
+      # see real client IPs instead of Render's proxy IP.
+      - key: TRUSTED_PROXY_IPS
+        value: "*"
+      # OAuth (optional). Each provider activates once both its id and secret
+      # are set. Register callback URL https://<service>.onrender.com/auth/oauth/<provider>/callback
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: MICROSOFT_CLIENT_ID
+        sync: false
+      - key: MICROSOFT_CLIENT_SECRET
+        sync: false
+      - key: MICROSOFT_TENANT
+        value: common
+
+databases:
+  - name: fastapi-auth-db
+    plan: free
+    databaseName: fastapi_auth
+    user: fastapi_user

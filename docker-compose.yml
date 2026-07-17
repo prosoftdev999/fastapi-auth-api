@@ -26,6 +26,42 @@ services:
 
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    container_name: fastapi-auth-redis
+
+    ports:
+      - "6380:6379"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    restart: unless-stopped
+
+  # S3-compatible object storage for local dev (file uploads feature).
+  # Console at http://localhost:9001 (login: minioadmin / minioadmin).
+  minio:
+    image: minio/minio:latest
+    container_name: fastapi-auth-minio
+
+    command: server /data --console-address ":9001"
+
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+    volumes:
+      - minio_data:/data
+
+    restart: unless-stopped
+
   api:
     build:
       context: .
@@ -41,12 +77,71 @@ services:
 
     environment:
       DATABASE_URL: postgresql+psycopg2://fastapi_user:fastapi_password@db:5432/fastapi_auth
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET_NAME: fastapi-auth-uploads
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
 
     depends_on:
       db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+    restart: unless-stopped
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: fastapi-auth-celery-worker
+
+    command: celery -A app.core.celery_app worker --loglevel=info
+
+    env_file:
+      - .env
+
+    environment:
+      DATABASE_URL: postgresql+psycopg2://fastapi_user:fastapi_password@db:5432/fastapi_auth
+      REDIS_URL: redis://redis:6379/0
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: fastapi-auth-celery-beat
+
+    command: celery -A app.core.celery_app beat --loglevel=info
+
+    env_file:
+      - .env
+
+    environment:
+      DATABASE_URL: postgresql+psycopg2://fastapi_user:fastapi_password@db:5432/fastapi_auth
+      REDIS_URL: redis://redis:6379/0
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
     restart: unless-stopped
 
 volumes:
   postgres_data:
+  minio_data:

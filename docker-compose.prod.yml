@@ -1,0 +1,298 @@
+# Production-shaped local stack: Gunicorn + multiple Uvicorn workers, no bind
+# mounts, no host port exposed for db/redis, resource limits, secrets pulled
+# from .env.production (never committed — see .env.production.example).
+#
+# Usage: docker compose -f docker-compose.prod.yml --env-file .env.production up --build
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: fastapi-auth-postgres-prod
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fastapi_auth}
+      POSTGRES_USER: ${POSTGRES_USER:-fastapi_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-fastapi_user} -d ${POSTGRES_DB:-fastapi_auth}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    container_name: fastapi-auth-redis-prod
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: fastapi-auth-api-prod
+
+    # Overrides the image's default single-process CMD with a multi-worker
+    # Gunicorn server. WEB_CONCURRENCY defaults to 4; tune per host CPU count
+    # (rule of thumb: (2 * cores) + 1).
+    command: >
+      sh -c "alembic upgrade head &&
+      gunicorn app.main:app
+      -k uvicorn.workers.UvicornWorker
+      --workers ${WEB_CONCURRENCY:-4}
+      --bind 0.0.0.0:8000
+      --access-logfile -
+      --error-logfile -"
+
+    # No host port mapping: Nginx is the only public entrypoint (below), api
+    # is reachable only from other containers on this compose network.
+
+    env_file:
+      - .env.production
+
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fastapi_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-fastapi_auth}
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: production
+      # Safe as "trust everything" here specifically because api has no host
+      # port mapping — Nginx is the only possible source of a request, so
+      # there's no path for a client to forge X-Forwarded-For directly. In a
+      # topology where api is reachable some other way, scope this to the
+      # actual proxy IP/CIDR instead.
+      TRUSTED_PROXY_IPS: "*"
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: fastapi-auth-celery-worker-prod
+
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-4}
+
+    env_file:
+      - .env.production
+
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fastapi_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-fastapi_auth}
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: production
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
+  # Exactly one instance — beat only schedules tasks (workers do the actual
+  # work), and running more than one would fire every scheduled job multiple
+  # times.
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: fastapi-auth-celery-beat-prod
+
+    command: celery -A app.core.celery_app beat --loglevel=info
+
+    env_file:
+      - .env.production
+
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fastapi_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-fastapi_auth}
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: production
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: fastapi-auth-nginx-prod
+
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN must be set, e.g. api.example.com}
+
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - certbot_conf:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    depends_on:
+      - api
+
+    restart: unless-stopped
+
+  # Renews certs every 12h (a no-op unless within Let's Encrypt's renewal
+  # window). Initial issuance is a one-time run via nginx/init-letsencrypt.sh,
+  # not this long-running service.
+  certbot:
+    image: certbot/certbot
+    container_name: fastapi-auth-certbot-prod
+
+    volumes:
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+
+    entrypoint: >
+      sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $${!}; done"
+
+    restart: unless-stopped
+
+  # ---- Monitoring ----
+
+  # Docker/container metrics: CPU, memory, network, disk per container.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: fastapi-auth-cadvisor-prod
+
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # PostgreSQL metrics: connections, transaction rates, replication lag, etc.
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter
+    container_name: fastapi-auth-postgres-exporter-prod
+
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-fastapi_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-fastapi_auth}?sslmode=disable
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+  redis_exporter:
+    image: oliver006/redis_exporter
+    container_name: fastapi-auth-redis-exporter-prod
+
+    environment:
+      REDIS_ADDR: redis://redis:6379
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: fastapi-auth-prometheus-prod
+
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+    # Exposed directly for convenience here; in a real deployment put this
+    # behind a VPN/SSH tunnel/auth proxy rather than the public internet —
+    # it has no authentication of its own.
+    ports:
+      - "9090:9090"
+
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: fastapi-auth-grafana-prod
+
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+
+    ports:
+      - "3001:3000"
+
+    depends_on:
+      - prometheus
+
+    restart: unless-stopped
+
+volumes:
+  postgres_data_prod:
+  certbot_conf:
+  certbot_www:
+  prometheus_data:
+  grafana_data:

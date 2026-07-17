@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.models.role import user_roles
 
 
 class User(Base):
@@ -18,9 +19,11 @@ class User(Base):
         nullable=False,
     )
 
-    hashed_password: Mapped[str] = mapped_column(
+    # Nullable: users who sign up exclusively via OAuth have no password
+    # until they explicitly set one (e.g. via the password reset flow).
+    hashed_password: Mapped[str | None] = mapped_column(
         String(255),
-        nullable=False,
+        nullable=True,
     )
 
     is_active: Mapped[bool] = mapped_column(
@@ -41,4 +44,11 @@ class User(Base):
         nullable=False,
     )
 
-    
+    oauth_accounts: Mapped[list["OAuthAccount"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    roles: Mapped[list["Role"]] = relationship(
+        secondary=user_roles, back_populates="users"
+    )

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.schemas.user import validate_password_strength
 
@@ -6,9 +6,28 @@ from app.schemas.user import validate_password_strength
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [{"email": "jane.doe@example.com"}]
+        }
+    )
+
 
 class ForgotPasswordResponse(BaseModel):
     message: str
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "message": (
+                        "If an account exists for this email, password "
+                        "reset instructions have been sent"
+                    )
+                }
+            ]
+        }
+    )
 
 
 class ResetPasswordRequest(BaseModel):
@@ -23,6 +42,10 @@ class ResetPasswordRequest(BaseModel):
     def validate_new_password(cls, password: str) -> str:
         return validate_password_strength(password)
 
-
-class MessageResponse(BaseModel):
-    message: str
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {"token": "eyJhbGciOi...", "new_password": "NewStrongPass456"}
+            ]
+        }
+    )

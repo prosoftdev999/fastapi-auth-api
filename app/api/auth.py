@@ -1,29 +1,38 @@
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     HTTPException,
+    Response,
     status,
 )
+from fastapi.security import HTTPAuthorizationCredentials
+from redis import Redis
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.dependencies import bearer_scheme
 from app.auth.jwt import (
     create_access_token,
     create_email_verification_token,
     create_password_reset_token,
     create_refresh_token,
+    decode_access_token,
     decode_email_verification_token,
     decode_password_reset_token,
     decode_refresh_token,
+    remaining_ttl_seconds,
 )
 from app.auth.password import hash_password, verify_password
+from app.core.rbac import DEFAULT_USER_ROLE_NAME
+from app.core.redis_client import get_redis
 from app.db.session import get_db
+from app.models.role import Role
 from app.models.user import User
+from app.schemas.common import MessageResponse
 from app.schemas.token import (
     AccessTokenResponse,
     LoginRequest,
-    MessageResponse,
+    LogoutRequest,
     RefreshTokenRequest,
     RegistrationResponse,
     TokenResponse,
@@ -31,13 +40,19 @@ from app.schemas.token import (
 from app.schemas.password_reset import (
     ForgotPasswordRequest,
     ForgotPasswordResponse,
-    MessageResponse,
     ResetPasswordRequest,
 )
 from app.schemas.user import UserCreate, UserResponse
-from app.services.email import (
-    send_password_reset_email,
-    send_verification_email,
+from app.services.rate_limit import RateLimiter
+from app.services.token_blacklist import (
+    blacklist_token,
+    is_token_blacklisted,
+    is_token_used,
+    mark_token_used,
+)
+from app.tasks.email import (
+    send_password_reset_email_task,
+    send_verification_email_task,
 )
 
 router = APIRouter(
@@ -50,10 +65,10 @@ router = APIRouter(
     "/register",
     response_model=RegistrationResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RateLimiter(times=5, seconds=60, scope="register"))],
 )
 def register_user(
     user_data: UserCreate,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> RegistrationResponse:
     email = str(user_data.email).lower()
@@ -72,6 +87,12 @@ def register_user(
         hashed_password=hash_password(user_data.password),
     )
 
+    default_role = db.scalar(
+        select(Role).where(Role.name == DEFAULT_USER_ROLE_NAME)
+    )
+    if default_role is not None:
+        user.roles.append(default_role)
+
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -80,11 +101,7 @@ def register_user(
         subject=str(user.id)
     )
 
-    background_tasks.add_task(
-        send_verification_email,
-        user.email,
-        verification_token,
-    )
+    send_verification_email_task.delay(user.email, verification_token)
 
     return RegistrationResponse(
         id=user.id,
@@ -98,6 +115,7 @@ def register_user(
 @router.post(
     "/login",
     response_model=TokenResponse,
+    dependencies=[Depends(RateLimiter(times=5, seconds=60, scope="login"))],
 )
 def login_user(
     login_data: LoginRequest,
@@ -108,9 +126,10 @@ def login_user(
         select(User).where(User.email == email)
     )
 
-    if user is None or not verify_password(
-        login_data.password,
-        user.hashed_password,
+    if (
+        user is None
+        or user.hashed_password is None
+        or not verify_password(login_data.password, user.hashed_password)
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -146,17 +165,18 @@ def login_user(
 def refresh_access_token(
     token_data: RefreshTokenRequest,
     db: Session = Depends(get_db),
+    redis_client: Redis = Depends(get_redis),
 ) -> AccessTokenResponse:
-    email = decode_refresh_token(token_data.refresh_token)
+    claims = decode_refresh_token(token_data.refresh_token)
 
-    if email is None:
+    if claims is None or is_token_blacklisted(redis_client, claims.jti):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         )
 
     user = db.scalar(
-        select(User).where(User.email == email)
+        select(User).where(User.email == claims.subject)
     )
 
     if user is None or not user.is_active:
@@ -172,6 +192,43 @@ def refresh_access_token(
         token_type="bearer",
     )
 
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def logout(
+    body: LogoutRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    redis_client: Redis = Depends(get_redis),
+) -> Response:
+    access_claims = decode_access_token(credentials.credentials)
+
+    if access_claims is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired access token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    blacklist_token(
+        redis_client,
+        access_claims.jti,
+        ttl_seconds=remaining_ttl_seconds(access_claims.expires_at),
+    )
+
+    if body.refresh_token is not None:
+        refresh_claims = decode_refresh_token(body.refresh_token)
+
+        if refresh_claims is not None:
+            blacklist_token(
+                redis_client,
+                refresh_claims.jti,
+                ttl_seconds=remaining_ttl_seconds(refresh_claims.expires_at),
+            )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 @router.get(
     "/verify-email",
     response_model=MessageResponse,
@@ -179,17 +236,18 @@ def refresh_access_token(
 def verify_email(
     token: str,
     db: Session = Depends(get_db),
+    redis_client: Redis = Depends(get_redis),
 ) -> MessageResponse:
-    subject = decode_email_verification_token(token)
+    claims = decode_email_verification_token(token)
 
-    if subject is None:
+    if claims is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired verification token",
         )
 
     try:
-        user_id = int(subject)
+        user_id = int(claims.subject)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -209,10 +267,22 @@ def verify_email(
             message="Email is already verified"
         )
 
+    if is_token_used(redis_client, claims.jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired verification token",
+        )
+
     user.is_verified = True
 
     db.add(user)
     db.commit()
+
+    mark_token_used(
+        redis_client,
+        claims.jti,
+        ttl_seconds=remaining_ttl_seconds(claims.expires_at),
+    )
 
     return MessageResponse(
         message="Email verified successfully"
@@ -221,10 +291,10 @@ def verify_email(
 @router.post(
     "/forgot-password",
     response_model=ForgotPasswordResponse,
+    dependencies=[Depends(RateLimiter(times=5, seconds=60, scope="forgot-password"))],
 )
 def forgot_password(
     request_data: ForgotPasswordRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> ForgotPasswordResponse:
     email = str(request_data.email).lower()
@@ -243,11 +313,7 @@ def forgot_password(
             subject=str(user.id)
         )
 
-        background_tasks.add_task(
-            send_password_reset_email,
-            user.email,
-            reset_token,
-        )
+        send_password_reset_email_task.delay(user.email, reset_token)
 
     return ForgotPasswordResponse(
         message=generic_message,
@@ -261,19 +327,26 @@ def forgot_password(
 def reset_password(
     request_data: ResetPasswordRequest,
     db: Session = Depends(get_db),
+    redis_client: Redis = Depends(get_redis),
 ) -> MessageResponse:
-    subject = decode_password_reset_token(
+    claims = decode_password_reset_token(
         request_data.token
     )
 
-    if subject is None:
+    if claims is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired password reset token",
+        )
+
+    if is_token_used(redis_client, claims.jti):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired password reset token",
         )
 
     try:
-        user_id = int(subject)
+        user_id = int(claims.subject)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -294,7 +367,7 @@ def reset_password(
             detail="User account is inactive",
         )
 
-    if verify_password(
+    if user.hashed_password is not None and verify_password(
         request_data.new_password,
         user.hashed_password,
     ):
@@ -309,6 +382,12 @@ def reset_password(
 
     db.add(user)
     db.commit()
+
+    mark_token_used(
+        redis_client,
+        claims.jti,
+        ttl_seconds=remaining_ttl_seconds(claims.expires_at),
+    )
 
     return MessageResponse(
         message="Password reset successfully"

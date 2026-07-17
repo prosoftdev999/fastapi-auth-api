@@ -1,12 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, Response, status
 
 from app.auth.dependencies import get_current_user
-from app.auth.password import hash_password, verify_password
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.user import PasswordChange, UserResponse, UserUpdate
+from app.services.user_profile import (
+    change_user_password,
+    deactivate_user,
+    update_user_email,
+)
+from sqlalchemy.orm import Session
 
 router = APIRouter(
     prefix="/users",
@@ -34,26 +37,7 @@ def update_current_user(
     db: Session = Depends(get_db),
 ) -> User:
     if user_data.email is not None:
-        normalized_email = str(user_data.email).lower()
-
-        existing_user = db.scalar(
-            select(User).where(
-                User.email == normalized_email,
-                User.id != current_user.id,
-            )
-        )
-
-        if existing_user is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="A user with this email already exists",
-            )
-
-        current_user.email = normalized_email
-
-    db.add(current_user)
-    db.commit()
-    db.refresh(current_user)
+        return update_user_email(db, current_user, str(user_data.email))
 
     return current_user
 
@@ -67,30 +51,12 @@ def change_current_user_password(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Response:
-    if not verify_password(
+    change_user_password(
+        db,
+        current_user,
         password_data.current_password,
-        current_user.hashed_password,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
-        )
-
-    if verify_password(
         password_data.new_password,
-        current_user.hashed_password,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be different",
-        )
-
-    current_user.hashed_password = hash_password(
-        password_data.new_password
     )
-
-    db.add(current_user)
-    db.commit()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -103,9 +69,6 @@ def deactivate_current_user(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Response:
-    current_user.is_active = False
-
-    db.add(current_user)
-    db.commit()
+    deactivate_user(db, current_user)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # Application metrics: request rate/latency/in-progress (request-level,
+  # via prometheus-fastapi-instrumentator) plus custom gauges — DB pool
+  # size/checked-out connections and last health-check result.
+  - job_name: fastapi-auth-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+
+  # Container-level CPU/memory/network/disk metrics for every container on
+  # this host (Docker metrics).
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  # PostgreSQL internal stats (connections, transactions, replication lag,
+  # etc.) — beyond what the app's own connection-pool gauges can see.
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres_exporter:9187"]
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis_exporter:9121"]

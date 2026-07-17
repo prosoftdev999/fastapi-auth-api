@@ -131,6 +131,7 @@ activemq-data/
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # ============================
 # Python virtual environments
@@ -194,3 +195,6 @@ __marimo__/
 *.db
 *.sqlite
 *.sqlite3
+
+# Temporary files
+claude-phase1-phase4.patch

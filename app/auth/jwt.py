@@ -1,3 +1,5 @@
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -6,6 +8,13 @@ from jose import JWTError, jwt
 from app.core.config import settings
 
 ALGORITHM = "HS256"
+
+
+@dataclass(frozen=True)
+class TokenClaims:
+    subject: str
+    jti: str
+    expires_at: datetime
 
 
 def create_token(
@@ -18,6 +27,7 @@ def create_token(
     payload = {
         "sub": subject,
         "type": token_type,
+        "jti": str(uuid.uuid4()),
         "iat": now,
         "exp": now + expires_delta,
     }
@@ -49,7 +59,7 @@ def create_refresh_token(subject: str) -> str:
     )
 
 
-def decode_token(token: str, expected_type: str) -> str | None:
+def decode_token(token: str, expected_type: str) -> TokenClaims | None:
     try:
         payload: dict[str, Any] = jwt.decode(
             token,
@@ -58,25 +68,34 @@ def decode_token(token: str, expected_type: str) -> str | None:
         )
 
         subject = payload.get("sub")
+        jti = payload.get("jti")
         token_type = payload.get("type")
+        exp = payload.get("exp")
 
-        if not isinstance(subject, str):
+        if not isinstance(subject, str) or not isinstance(jti, str):
             return None
 
         if token_type != expected_type:
             return None
 
-        return subject
+        if not isinstance(exp, (int, float)):
+            return None
+
+        return TokenClaims(
+            subject=subject,
+            jti=jti,
+            expires_at=datetime.fromtimestamp(exp, tz=timezone.utc),
+        )
 
     except JWTError:
         return None
 
 
-def decode_access_token(token: str) -> str | None:
+def decode_access_token(token: str) -> TokenClaims | None:
     return decode_token(token, expected_type="access")
 
 
-def decode_refresh_token(token: str) -> str | None:
+def decode_refresh_token(token: str) -> TokenClaims | None:
     return decode_token(token, expected_type="refresh")
 
 def create_email_verification_token(subject: str) -> str:
@@ -87,7 +106,7 @@ def create_email_verification_token(subject: str) -> str:
     )
 
 
-def decode_email_verification_token(token: str) -> str | None:
+def decode_email_verification_token(token: str) -> TokenClaims | None:
     return decode_token(
         token,
         expected_type="email_verification",
@@ -101,8 +120,12 @@ def create_password_reset_token(subject: str) -> str:
     )
 
 
-def decode_password_reset_token(token: str) -> str | None:
+def decode_password_reset_token(token: str) -> TokenClaims | None:
     return decode_token(
         token,
         expected_type="password_reset",
     )
+
+
+def remaining_ttl_seconds(expires_at: datetime) -> int:
+    return max(int((expires_at - datetime.now(timezone.utc)).total_seconds()), 0)
